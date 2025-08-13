@@ -80,6 +80,13 @@ describe('View', () => {
     v.setBorderRadius(-9999999);
   });
 
+  it('allows setting various border radius individual', () => {
+    w = new BaseWindow({ show: false });
+    const v = new View();
+    w.setContentView(v);
+    v.setBorderRadius({ topLeft: 10, topRight: 20, bottomRight: 30, bottomLeft: 40 });
+  });
+
   describe('view.getVisible|setVisible', () => {
     it('is visible by default', () => {
       const v = new View();

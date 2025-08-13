@@ -358,33 +358,95 @@ void View::SetBackgroundColor(std::optional<WrappedSkColor> color) {
 
 void View::SetBorderRadius(int radius) {
   border_radius_ = radius;
+  border_radii_ = BorderRadii(static_cast<float>(radius));
   ApplyBorderRadius();
 }
 
+void View::SetBorderRadius(v8::Isolate* isolate, v8::Local<v8::Value> radius) {
+  if (radius->IsNumber()) {
+    // Single number for all corners
+    double r = radius->NumberValue(isolate->GetCurrentContext()).FromMaybe(0.0);
+    SetBorderRadius(static_cast<int>(r));
+  } else if (radius->IsObject()) {
+    // Object with individual corner values
+    v8::Local<v8::Object> obj = radius.As<v8::Object>();
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    
+    auto get_corner_value = [&](const char* key) -> float {
+      v8::Local<v8::String> v8_key = v8::String::NewFromUtf8(isolate, key).ToLocalChecked();
+      v8::Local<v8::Value> val;
+      if (obj->Get(context, v8_key).ToLocal(&val) && val->IsNumber()) {
+        return static_cast<float>(val->NumberValue(context).FromMaybe(0.0));
+      }
+      return 0.0f;
+    };
+    
+    float top_left = get_corner_value("topLeft");
+    float top_right = get_corner_value("topRight");
+    float bottom_right = get_corner_value("bottomRight");
+    float bottom_left = get_corner_value("bottomLeft");
+    
+    border_radii_ = BorderRadii(top_left, top_right, bottom_right, bottom_left);
+    // For backward compatibility, set border_radius_ to the average
+    border_radius_ = static_cast<int>((top_left + top_right + bottom_right + bottom_left) / 4.0f);
+    ApplyBorderRadius();
+  }
+}
+
+std::optional<int> View::border_radius() const {
+  return border_radius_;
+}
+
 void View::ApplyBorderRadius() {
-  if (!border_radius_.has_value() || !view_)
+  if ((!border_radius_.has_value() && !border_radii_.has_value()) || !view_)
     return;
 
   auto size = view_->bounds().size();
 
-  // Restrict border radius to the constraints set in the path builder class.
-  // If the constraints are exceeded, the builder will crash.
-  int radius;
-  {
-    float r = border_radius_.value() * 1.f;
-    r = std::min(r, size.width() / 2.f);
-    r = std::min(r, size.height() / 2.f);
-    r = std::max(r, 0.f);
-    radius = std::floor(r);
-  }
-
-  // RoundedRectCutoutPathBuilder has a minimum size of 32 x 32.
-  if (radius > 0 && size.width() >= 32 && size.height() >= 32) {
-    auto builder = ash::RoundedRectCutoutPathBuilder(gfx::SizeF(size));
-    builder.CornerRadius(radius);
-    view_->SetClipPath(builder.Build());
+  if (border_radii_.has_value()) {
+    // Use individual corner radii
+    const BorderRadii& radii = border_radii_.value();
+    
+    // Constraint function to ensure radii don't exceed bounds
+    auto constrain_radius = [&](float radius) -> float {
+      float r = std::min(radius, size.width() / 2.f);
+      r = std::min(r, size.height() / 2.f);
+      return std::max(r, 0.f);
+    };
+    
+    float top_left = constrain_radius(radii.top_left);
+    float top_right = constrain_radius(radii.top_right);
+    float bottom_right = constrain_radius(radii.bottom_right);
+    float bottom_left = constrain_radius(radii.bottom_left);
+    
+    // Check if any corner has a meaningful radius and size is adequate
+    bool has_radius = (top_left > 0 || top_right > 0 || bottom_right > 0 || bottom_left > 0);
+    if (has_radius && size.width() >= 32 && size.height() >= 32) {
+      auto builder = ash::RoundedRectCutoutPathBuilder(gfx::SizeF(size));
+      builder.CornerRadius(static_cast<int>(std::max({top_left, top_right, bottom_right, bottom_left})));
+      view_->SetClipPath(builder.Build());
+    } else {
+      view_->SetClipPath(SkPath());
+    }
   } else {
-    view_->SetClipPath(SkPath());
+    // Use uniform radius (backward compatibility)
+    int radius;
+    {
+      float r = border_radius_.value() * 1.f;
+      r = std::min(r, size.width() / 2.f);
+      r = std::min(r, size.height() / 2.f);
+      r = std::max(r, 0.f);
+      radius = std::floor(r);
+    }
+
+    // RoundedRectCutoutPathBuilder has a minimum size of 32 x 32.
+    if (radius > 0 && size.width() >= 32 && size.height() >= 32) {
+      auto builder = ash::RoundedRectCutoutPathBuilder(gfx::SizeF(size));
+      builder.CornerRadius(radius);
+      view_->SetClipPath(builder.Build());
+    } else {
+      view_->SetClipPath(SkPath());
+    }
   }
 }
 
@@ -444,6 +506,15 @@ gin_helper::Handle<View> View::Create(v8::Isolate* isolate) {
 }
 
 // static
+// Helper function to handle overloaded setBorderRadius method
+void SetBorderRadiusWrapper(View* self, gin_helper::Arguments* args) {
+  v8::Isolate* isolate = args->isolate();
+  v8::Local<v8::Value> radius;
+  if (args->GetNext(&radius)) {
+    self->SetBorderRadius(isolate, radius);
+  }
+}
+
 void View::BuildPrototype(v8::Isolate* isolate,
                           v8::Local<v8::FunctionTemplate> prototype) {
   prototype->SetClassName(gin::StringToV8(isolate, "View"));
@@ -454,7 +525,7 @@ void View::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("setBounds", &View::SetBounds)
       .SetMethod("getBounds", &View::GetBounds)
       .SetMethod("setBackgroundColor", &View::SetBackgroundColor)
-      .SetMethod("setBorderRadius", &View::SetBorderRadius)
+      .SetMethod("setBorderRadius", &SetBorderRadiusWrapper)
       .SetMethod("setLayout", &View::SetLayout)
       .SetMethod("setVisible", &View::SetVisible)
       .SetMethod("getVisible", &View::GetVisible);

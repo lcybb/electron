@@ -74,10 +74,24 @@ void WebContentsView::SetBorderRadius(int radius) {
   ApplyBorderRadius();
 }
 
+void WebContentsView::SetBorderRadius(v8::Isolate* isolate, v8::Local<v8::Value> radius) {
+  View::SetBorderRadius(isolate, radius);
+  ApplyBorderRadius();
+}
+
 void WebContentsView::ApplyBorderRadius() {
-  if (border_radius().has_value() && api_web_contents_ && view()->GetWidget()) {
-    auto* view = api_web_contents_->inspectable_web_contents()->GetView();
-    view->SetCornerRadii(gfx::RoundedCornersF(border_radius().value()));
+  if (!api_web_contents_ || !view()->GetWidget())
+    return;
+    
+  auto* web_view = api_web_contents_->inspectable_web_contents()->GetView();
+  
+  if (border_radii().has_value()) {
+    // Use the new BorderRadii structure with individual corner values
+    const BorderRadii& radii = border_radii().value();
+    web_view->SetCornerRadii(radii.ToRoundedCornersF());
+  } else if (border_radius().has_value()) {
+    // Fallback to uniform radius for backward compatibility
+    web_view->SetCornerRadii(gfx::RoundedCornersF(border_radius().value()));
   }
 }
 
@@ -208,6 +222,15 @@ gin_helper::WrappableBase* WebContentsView::New(gin_helper::Arguments* args) {
   return view;
 }
 
+// Helper function to handle overloaded setBorderRadius method for WebContentsView
+void SetWebContentsViewBorderRadiusWrapper(WebContentsView* self, gin_helper::Arguments* args) {
+  v8::Isolate* isolate = args->isolate();
+  v8::Local<v8::Value> radius;
+  if (args->GetNext(&radius)) {
+    self->SetBorderRadius(isolate, radius);
+  }
+}
+
 // static
 void WebContentsView::BuildPrototype(
     v8::Isolate* isolate,
@@ -215,7 +238,7 @@ void WebContentsView::BuildPrototype(
   prototype->SetClassName(gin::StringToV8(isolate, "WebContentsView"));
   gin_helper::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
       .SetMethod("setBackgroundColor", &WebContentsView::SetBackgroundColor)
-      .SetMethod("setBorderRadius", &WebContentsView::SetBorderRadius)
+      .SetMethod("setBorderRadius", &SetWebContentsViewBorderRadiusWrapper)
       .SetProperty("webContents", &WebContentsView::GetWebContents);
 }
 
